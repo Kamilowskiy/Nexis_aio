@@ -74,7 +74,7 @@ function App() {
           <div className="flex items-center h-full gap-2" style={{ WebkitAppRegion: 'no-drag' } as any}>
             <div className="px-3 flex items-center gap-2">
               <span className="text-base">⚡</span>
-              <span className="text-sm font-semibold">Nexis AIO</span>
+              <span className="text-sm font-semibold">NexDeck</span>
             </div>
 
             <div className="flex items-center">
@@ -231,7 +231,7 @@ function App() {
         </header>
       ) : (
         <header className="flex items-center h-16 px-6 bg-[#1c1d24] border-b border-white/5">
-          <h1 className="text-2xl font-bold">Nexis AIO</h1>
+          <h1 className="text-2xl font-bold">NexDeck</h1>
         </header>
       )}
 
@@ -365,7 +365,7 @@ function App() {
                 <button className="w-full flex items-center justify-between px-3 py-2.5 rounded-lg hover:bg-white/5 transition-colors text-left group">
                   <div className="flex items-center gap-3">
                     <span className="text-base">🚀</span>
-                    <span className="text-sm">Nexis AIO</span>
+                    <span className="text-sm">NexDeck</span>
                   </div>
                   <span className="text-sm text-white/40 group-hover:text-white/60">24</span>
                 </button>

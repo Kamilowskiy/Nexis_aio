@@ -34,3 +34,62 @@
     @apply scale-[1.02] shadow-lg;
   }
 }
+
+/* ✅ EMAIL BODY ISOLATION - blokuj tylko style które mogą nadpisać UI */
+.email-content-wrapper {
+  isolation: isolate;
+  contain: layout style;
+  position: relative;
+  overflow: hidden;
+}
+
+.email-body-isolated {
+  /* Tylko podstawowe zabezpieczenia przed overflow */
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: visible;
+  word-wrap: break-word;
+  
+  /* Minimalne style - NIE nadpisujemy layoutu emaili */
+  color: rgba(255, 255, 255, 0.9);
+  line-height: 1.6;
+}
+
+/* ✅ OVERFLOW PROTECTION - zapobiegaj wyjściu poza kontener */
+.email-body-isolated * {
+  max-width: 100% !important;
+  box-sizing: border-box;
+}
+
+.email-body-isolated img {
+  max-width: 100% !important;
+  height: auto !important;
+}
+
+.email-body-isolated table {
+  max-width: 100% !important;
+}
+
+/* ✅ Fix dla linków - żeby były widoczne i klikalne */
+.email-body-isolated a {
+  color: #5b9dff;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.email-body-isolated a:hover {
+  color: #4a8ce6;
+}
+
+/* ✅ BLOKUJ TYLKO fixed/sticky position - absolute jest OK dla layoutów emaili */
+.email-body-isolated [style*="position: fixed"],
+.email-body-isolated [style*="position:fixed"],
+.email-body-isolated [style*="position: sticky"],
+.email-body-isolated [style*="position:sticky"] {
+  position: relative !important;
+}
+
+/* ✅ Ogranicz ekstremalne z-index */
+.email-body-isolated [style*="z-index"] {
+  z-index: 10 !important;
+}

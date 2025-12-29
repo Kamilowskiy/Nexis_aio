@@ -1,34 +1,58 @@
-use crate::types::*;
-use base64::{engine::general_purpose, Engine as _};
+use crate::types::{EmailAttachment, EmailMessage, GmailMessage, InlineImage};
+use base64::{Engine as _, engine::general_purpose};
 
-/// Parse Gmail message into our EmailMessage format
 pub fn parse_email_message(message: GmailMessage) -> EmailMessage {
-    // payload.headers is Option<Vec<GmailHeader>> in types; use helper that accepts Option<&[GmailHeader]>
-    let headers_opt = message.payload.headers.as_deref();
+    // ✅ Poprawka: headers to Vec, nie Option
+    let headers = &message.payload.headers;
+    
+    let mut attachments: Vec<EmailAttachment> = Vec::new();
+    let mut inline_images: Vec<InlineImage> = Vec::new();
 
-    // Extract headers efficiently
-    let from = get_header(headers_opt, "From");
-    let to = get_header(headers_opt, "To");
-    let subject = get_header(headers_opt, "Subject");
-    let date = get_header(headers_opt, "Date");
+    let from = headers
+        .iter()
+        .find(|h| h.name.eq_ignore_ascii_case("From"))
+        .map(|h| h.value.clone())
+        .unwrap_or_default();
 
-    // Parse body and attachments
+    let to = headers
+        .iter()
+        .find(|h| h.name.eq_ignore_ascii_case("To"))
+        .map(|h| h.value.clone())
+        .unwrap_or_default();
+
+    let subject = headers
+        .iter()
+        .find(|h| h.name.eq_ignore_ascii_case("Subject"))
+        .map(|h| h.value.clone())
+        .unwrap_or_default();
+
+    let date = headers
+        .iter()
+        .find(|h| h.name.eq_ignore_ascii_case("Date"))
+        .map(|h| h.value.clone())
+        .unwrap_or_default();
+
     let mut body = String::new();
-    let mut attachments: Vec<Attachment> = Vec::new();
-    let mut inline_images: Vec<Attachment> = Vec::new();
 
-    // Try main body first
-    if let Some(data) = &message.payload.body.data {
-        body = decode_base64(data);
-    } else if let Some(parts) = &message.payload.parts {
+    // ✅ Poprawka: body jest Option<GmailBody>
+    if let Some(ref gmail_body) = message.payload.body {
+        if let Some(ref data) = gmail_body.data {
+            if let Ok(decoded) = general_purpose::URL_SAFE_NO_PAD.decode(data) {
+                body = String::from_utf8_lossy(&decoded).to_string();
+            }
+        }
+    }
+
+    if let Some(parts) = &message.payload.parts {
         extract_parts(parts, &mut body, &mut attachments, &mut inline_images);
     }
 
-    // Check if unread
-    let unread = message.label_ids.contains(&"UNREAD".to_string());
+    let unread = message.label_ids.iter().any(|l| l.eq_ignore_ascii_case("UNREAD"));
+    let has_attachment = !attachments.is_empty();
 
-    // Check if has attachments
-    let has_attachment = !attachments.is_empty() || !inline_images.is_empty();
+    // ✅ Parse internalDate
+    let internal_date = message.internal_date
+        .and_then(|s| s.parse::<i64>().ok());
 
     EmailMessage {
         id: message.id,
@@ -44,125 +68,67 @@ pub fn parse_email_message(message: GmailMessage) -> EmailMessage {
         has_attachment,
         attachments,
         inline_images,
+        internal_date,
     }
 }
 
-/// Fast base64 decode with SIMD optimization
-fn decode_base64(data: &str) -> String {
-    // Gmail uses URL-safe base64 without padding
-    let cleaned = data.replace('-', "+").replace('_', "/");
-
-    general_purpose::STANDARD
-        .decode(cleaned.as_bytes())
-        .ok()
-        .and_then(|bytes| String::from_utf8(bytes).ok())
-        .unwrap_or_default()
-}
-
-/// Get header value by name (case-insensitive)
-fn get_header(headers: Option<&[GmailHeader]>, name: &str) -> String {
-    if let Some(hdrs) = headers {
-        hdrs.iter()
-            .find(|h| h.name.eq_ignore_ascii_case(name))
-            .map(|h| h.value.clone())
-            .unwrap_or_default()
-    } else {
-        String::new()
-    }
-}
-
-/// Recursively extract parts from email
 fn extract_parts(
-    parts: &[GmailPart],
+    parts: &[crate::types::GmailPart],
     body: &mut String,
-    attachments: &mut Vec<Attachment>,
-    inline_images: &mut Vec<Attachment>,
+    attachments: &mut Vec<EmailAttachment>,
+    inline_images: &mut Vec<InlineImage>,
 ) {
     for part in parts {
-        // Handle nested parts
-        if let Some(nested) = &part.parts {
-            extract_parts(nested, body, attachments, inline_images);
-            continue;
-        }
+        let mime = &part.mime_type;
 
-        // Handle attachments
-        if let Some(filename) = &part.filename {
-            // filename is Option<String> -> as ref it's &String
-            if !filename.is_empty() {
-                if let Some(attachment_id) = &part.body.attachment_id {
-                    // Extract content-id for inline images
-                    let content_id = part
-                        .headers
-                        .as_ref()
-                        .and_then(|headers: &Vec<GmailHeader>| {
-                            headers
-                                .iter()
-                                .find(|h| h.name.eq_ignore_ascii_case("content-id"))
-                                .map(|h| h.value.trim_matches(&['<', '>'][..]).to_string())
+        // ✅ Poprawka: body jest Option<GmailBody>
+        if let Some(ref part_body) = part.body {
+            if let Some(ref attachment_id) = part_body.attachment_id {
+                if let Some(ref filename) = part.filename {
+                    if !filename.is_empty() {
+                        let aid = attachment_id.clone();
+
+                        if mime.starts_with("image/") {
+                            if let Some(ref headers) = part.headers {
+                                let cid = headers
+                                    .iter()
+                                    .find(|h| h.name.eq_ignore_ascii_case("Content-ID"))
+                                    .map(|h| h.value.trim_matches(|c| c == '<' || c == '>').to_string());
+
+                                if let Some(content_id) = cid {
+                                    inline_images.push(InlineImage {
+                                        id: aid.clone(),
+                                        content_id,
+                                        mime_type: mime.clone(),
+                                    });
+                                }
+                            }
+                        }
+
+                        attachments.push(EmailAttachment {
+                            id: aid,
+                            filename: filename.clone(),
+                            size: part_body.size,
+                            mime_type: mime.clone(),
                         });
-
-                    // Ensure we clone attachment_id into owned String
-                    let aid: String = attachment_id.clone();
-
-                    let attachment = Attachment {
-                        id: Some(aid),
-                        filename: filename.clone(),
-                        mime_type: part.mime_type.clone(),
-                        size: part.body.size.unwrap_or(0),
-                        part_id: part.part_id.clone(),
-                        content_id: content_id.clone(),
-                    };
-
-                    // Inline images have content-id
-                    if content_id.is_some() {
-                        inline_images.push(attachment);
-                    } else {
-                        attachments.push(attachment);
                     }
-                    continue;
+                }
+            } else if mime.starts_with("text/html") || mime.starts_with("text/plain") {
+                if let Some(ref data) = part_body.data {
+                    if let Ok(decoded) = general_purpose::URL_SAFE_NO_PAD.decode(data) {
+                        let text = String::from_utf8_lossy(&decoded).to_string();
+                        if mime.starts_with("text/html") {
+                            *body = text;
+                        } else if body.is_empty() {
+                            *body = text;
+                        }
+                    }
                 }
             }
         }
 
-        // Extract body (prefer HTML, fallback to plain text)
-        if part.mime_type == "text/html" {
-            if let Some(data) = &part.body.data {
-                *body = decode_base64(data);
-            }
-        } else if part.mime_type == "text/plain" && body.is_empty() {
-            if let Some(data) = &part.body.data {
-                *body = decode_base64(data);
-            }
+        if let Some(ref subparts) = part.parts {
+            extract_parts(subparts, body, attachments, inline_images);
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_decode_base64() {
-        let encoded = "SGVsbG8gV29ybGQh";
-        let decoded = decode_base64(encoded);
-        assert_eq!(decoded, "Hello World!");
-    }
-
-    #[test]
-    fn test_get_header() {
-        let headers = vec![
-            GmailHeader {
-                name: "From".to_string(),
-                value: "test@example.com".to_string(),
-            },
-            GmailHeader {
-                name: "Subject".to_string(),
-                value: "Test Subject".to_string(),
-            },
-        ];
-
-        assert_eq!(get_header(Some(&headers), "from"), "test@example.com");
-        assert_eq!(get_header(Some(&headers), "SUBJECT"), "Test Subject");
-        assert_eq!(get_header(None, "To"), "");
     }
 }

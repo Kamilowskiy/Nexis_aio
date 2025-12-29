@@ -1,97 +1,109 @@
-//! Shared types used by the Rust Tauri backend.
-//! These types model the subset of Gmail API JSON we consume and the internal EmailMessage/cache shapes.
-
 use serde::{Deserialize, Serialize};
 
-/// Response when listing messages (metadata)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct GmailMessage {
+    pub id: String,
+    #[serde(rename = "threadId")]
+    pub thread_id: String,
+    #[serde(rename = "labelIds")]
+    pub label_ids: Vec<String>,
+    pub snippet: String,
+    #[serde(rename = "internalDate")]
+    pub internal_date: Option<String>,
+    pub payload: GmailPayload,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct GmailPayload {
+    pub headers: Vec<GmailHeader>,
+    pub parts: Option<Vec<GmailPart>>,
+    #[serde(rename = "mimeType")]
+    pub mime_type: String,
+    pub body: Option<GmailBody>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct GmailHeader {
+    pub name: String,
+    pub value: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct GmailPart {
+    #[serde(rename = "mimeType")]
+    pub mime_type: String,
+    pub body: Option<GmailBody>,
+    pub parts: Option<Vec<GmailPart>>,
+    pub headers: Option<Vec<GmailHeader>>,
+    #[serde(rename = "partId")]
+    pub part_id: Option<String>,
+    pub filename: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct GmailBody {
+    pub size: i64,
+    #[serde(rename = "attachmentId")]
+    pub attachment_id: Option<String>,
+    pub data: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct GmailMessageList {
-    #[serde(default)]
     pub messages: Option<Vec<GmailMessageRef>>,
     #[serde(rename = "nextPageToken")]
     pub next_page_token: Option<String>,
-    #[serde(rename = "resultSizeEstimate")]
-    pub result_size_estimate: Option<i32>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct GmailMessageRef {
     pub id: String,
     #[serde(rename = "threadId")]
     pub thread_id: String,
 }
 
-/// Gmail message payload/body header structures (subset)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GmailMessage {
+// ✅ Dodaj Clone dla EmailAttachment
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct EmailAttachment {
+    pub id: String,
+    pub filename: String,
+    pub size: i64,
+    #[serde(rename = "mimeType")]
+    pub mime_type: String,
+}
+
+// ✅ Dodaj Clone dla InlineImage
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct InlineImage {
+    pub id: String,
+    #[serde(rename = "contentId")]
+    pub content_id: String,
+    #[serde(rename = "mimeType")]
+    pub mime_type: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct EmailThread {
+    pub thread_id: String,
+    pub messages: Vec<EmailMessage>,
+    pub last_activity: i64,
+    pub subject: String,
+    pub snippet: String,
+    pub from: String,
+    pub date: String,
+    pub unread: bool,
+    pub has_attachment: bool,
+    pub label_ids: Vec<String>,
+    pub message_count: usize,
+}
+
+// ✅ Dodaj Clone dla EmailMessage
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct EmailMessage {
     pub id: String,
     #[serde(rename = "threadId")]
     pub thread_id: String,
-    #[serde(rename = "labelIds", default)]
-    pub label_ids: Vec<String>,
-    pub snippet: String,
-    pub payload: GmailPart, // top-level payload
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GmailPart {
-    #[serde(rename = "partId", default)]
-    pub part_id: Option<String>,
-
-    #[serde(rename = "mimeType", default)]
-    pub mime_type: String,
-
-    #[serde(default)]
-    pub filename: Option<String>,
-
-    #[serde(default)]
-    pub headers: Option<Vec<GmailHeader>>,
-
-    #[serde(default)]
-    pub body: GmailBody,
-
-    #[serde(default)]
-    pub parts: Option<Vec<GmailPart>>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct GmailBody {
-    #[serde(default)]
-    pub size: Option<u32>,
-
-    /// Base64url data when present (Gmail returns urlsafe base64 without padding)
-    #[serde(default)]
-    pub data: Option<String>,
-
-    /// If this body refers to an attachment, attachmentId is provided
-    #[serde(rename = "attachmentId", default)]
-    pub attachment_id: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GmailHeader {
-    pub name: String,
-    pub value: String,
-}
-
-/// Gmail label response (for mailbox stats)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GmailLabelResponse {
-    pub id: String,
-    pub name: String,
-    #[serde(rename = "messagesTotal")]
-    pub messages_total: Option<i64>,
-    #[serde(rename = "messagesUnread")]
-    pub messages_unread: Option<i64>,
-}
-
-/// Internal representation of parsed Email message (what frontend expects from Rust)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct EmailMessage {
-    pub id: String,
-    pub thread_id: String,
-    #[serde(default)]
+    #[serde(rename = "labelIds")]
     pub label_ids: Vec<String>,
     pub from: String,
     pub to: String,
@@ -100,83 +112,68 @@ pub struct EmailMessage {
     pub snippet: String,
     pub body: String,
     pub unread: bool,
+    #[serde(rename = "hasAttachment")]
     pub has_attachment: bool,
-    #[serde(default)]
-    pub attachments: Vec<Attachment>,
-    #[serde(default)]
-    pub inline_images: Vec<Attachment>,
+    pub attachments: Vec<EmailAttachment>,
+    #[serde(rename = "inlineImages")]
+    pub inline_images: Vec<InlineImage>,
+    #[serde(rename = "internalDate")]
+    pub internal_date: Option<i64>,
 }
 
-/// Attachment info used by frontend
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Attachment {
-    #[serde(rename = "id")]
-    pub id: Option<String>,
-    pub filename: String,
-    #[serde(rename = "mimeType")]
-    pub mime_type: String,
-    #[serde(default)]
-    pub size: u32,
-    #[serde(rename = "partId", default)]
-    pub part_id: Option<String>,
-    #[serde(rename = "contentId", default)]
-    pub content_id: Option<String>,
-}
-
-/// Mailbox stat used in responses
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MailboxStat {
-    pub id: String,
-    pub name: String,
-    pub total: i64,
-    pub unread: i64,
-}
-
-/// MailboxStats wrapper used across code (matches previous structure)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MailboxStats {
-    pub stats: std::collections::HashMap<String, MailboxStat>,
-}
-
-/// User profile (from Google oauth userinfo)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UserProfile {
-    pub email: String,
-    pub name: Option<String>,
-    pub picture: Option<String>,
-}
-
-/// Options passed from frontend to get emails
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GetEmailsOptions {
-    #[serde(rename = "maxResults")]
-    pub max_results: Option<u32>,
-    #[serde(rename = "pageToken")]
-    pub page_token: Option<String>,
-    #[serde(rename = "labelIds")]
-    pub label_ids: String,
-}
-
-/// EmailData shape for sending
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct EmailData {
-    pub to: String,
-    pub subject: String,
-    pub body: String,
-    pub cc: Option<String>,
-    pub bcc: Option<String>,
-}
-
-/// EmailListResponse returned by get_emails_rust (metadata-only messages)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct EmailListResponse {
     pub messages: Vec<EmailMessage>,
     #[serde(rename = "nextPageToken")]
     pub next_page_token: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ThreadListResponse {
+    pub threads: Vec<EmailThread>,
+    #[serde(rename = "nextPageToken")]
+    pub next_page_token: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct UserProfile {
+    #[serde(rename = "emailAddress")]
+    pub email: String,
+    #[serde(rename = "messagesTotal")]
+    pub messages_total: u32,
+    #[serde(rename = "threadsTotal")]
+    pub threads_total: u32,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct MailboxStat {
+    pub id: String,
+    pub name: String,
+    pub total: usize,
+    pub unread: usize,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct MailboxStats {
+    pub stats: std::collections::HashMap<String, MailboxStat>,
+}
+
+// ✅ Dodaj brakujące typy dla command.rs
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GetEmailsOptions {
+    #[serde(rename = "labelIds")]
+    pub label_ids: String,
+    #[serde(rename = "maxResults")]
+    pub max_results: Option<u32>,
+    #[serde(rename = "pageToken")]
+    pub page_token: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct EmailData {
+    pub to: String,
+    pub subject: String,
+    pub body: String,
+    pub cc: Option<String>,   // ✅ dodaj
+    pub bcc: Option<String>,  // ✅ dodaj
 }

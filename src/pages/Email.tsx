@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import EmailSidebar from '../components/sidebar/EmailSidebar';
 import emailAPI, { type EmailMessage, type UserProfile, type MailboxStats } from '../services/emailAPI-rust';
 
@@ -27,32 +27,167 @@ function Email({ sidebarVisible }: EmailProps) {
     unreadToday: 0
   });
 
+  const currentLabelRef = useRef(selectedLabel);
+  const nextPageTokenRef = useRef(nextPageToken);
+
+  useEffect(() => {
+    currentLabelRef.current = selectedLabel;
+  }, [selectedLabel]);
+
+  useEffect(() => {
+    nextPageTokenRef.current = nextPageToken;
+  }, [nextPageToken]);
+
+  const abortControllerRef = useRef<AbortController | null>(null);
+
+  // ✅ POPRAWKA: Usuń nextPageToken z dependencies
+  const loadEmails = useCallback(async (label: string, loadMore = false, pageToken?: string) => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    abortControllerRef.current = new AbortController();
+
+    const currentAbortController = abortControllerRef.current;
+
+    try {
+      if (loadMore) {
+        setLoadingMore(true);
+      } else {
+        setLoading(true);
+      }
+
+      // ✅ Użyj przekazanego tokena lub ref
+      const tokenToUse = pageToken || nextPageTokenRef.current;
+
+      console.log('📧 Loading emails for label:', label, 'loadMore:', loadMore, 'pageToken:', tokenToUse);
+
+      const response = await emailAPI.getEmails({
+        labelIds: label,
+        maxResults: 20,
+        pageToken: loadMore ? tokenToUse : undefined
+      });
+
+      if (currentAbortController.signal.aborted || currentLabelRef.current !== label) {
+        console.log('⏹️ Request aborted or label changed, ignoring result');
+        return;
+      }
+
+      console.log('📧 Received', response.messages?.length || 0, 'emails');
+      console.log('📧 Next page token:', response.nextPageToken);
+
+      if (loadMore) {
+        setEmails(prev => {
+          const newEmails = [...prev, ...(response.messages || [])];
+          console.log('📧 Total emails after load more:', newEmails.length);
+          return newEmails;
+        });
+      } else {
+        setEmails(response.messages || []);
+      }
+
+      setNextPageToken(response.nextPageToken);
+    } catch (error: any) {
+      if (error.name === 'AbortError') {
+        console.log('⏹️ Request was aborted');
+        return;
+      }
+      console.error('❌ Error loading emails:', error);
+      if (!loadMore) {
+        setEmails([]);
+      }
+    } finally {
+      if (!currentAbortController.signal.aborted && currentLabelRef.current === label) {
+        setLoading(false);
+        setLoadingMore(false);
+      }
+    }
+  }, []); // ✅ Pusta tablica - funkcja się nie przebudowuje
+
+  // ✅ POPRAWKA: handleLoadMore z useCallback
+  const handleLoadMore = useCallback(() => {
+    const token = nextPageTokenRef.current;
+    console.log('🔽 Load more clicked');
+    console.log('   - nextPageToken:', token);
+    console.log('   - loadingMore:', loadingMore);
+    console.log('   - selectedLabel:', currentLabelRef.current);
+
+    if (token && !loadingMore) {
+      loadEmails(currentLabelRef.current, true, token);
+    } else {
+      console.warn('⚠️ Cannot load more:', { token, loadingMore });
+    }
+  }, [loadingMore, loadEmails]);
+
+  const loadUserProfile = useCallback(async () => {
+    try {
+      const profile = await emailAPI.getUserProfile();
+      setUserProfile(profile);
+    } catch (error) {
+      console.error('Error loading user profile:', error);
+    }
+  }, []);
+
+  const loadMailboxStats = useCallback(async () => {
+    try {
+      const stats = await emailAPI.getMailboxStats();
+      console.log('📊 Mailbox stats loaded:', stats);
+      setMailboxStats(stats);
+    } catch (error) {
+      console.error('Error loading mailbox stats:', error);
+    }
+  }, []);
+
+  const loadTodayStats = useCallback(async () => {
+    try {
+      const stats = await emailAPI.getTodayStats();
+      console.log('📅 Today stats:', stats);
+      setTodayStats(stats);
+    } catch (error) {
+      console.error('Error loading today stats:', error);
+    }
+  }, []);
+
   useEffect(() => {
     console.log('🔍 Email component mounted, checking auth...');
-    
-    // Check for auth callback FIRST
+
     const urlParams = new URLSearchParams(window.location.search);
     if (urlParams.get('auth') === 'success') {
       console.log('✅ Auth callback detected! Setting authenticated=true');
       setAuthenticated(true);
       setLoading(false);
-      loadEmails();
-      loadUserProfile();
-      loadMailboxStats();
+
       window.history.replaceState({}, '', '/email');
+
+      Promise.all([
+        loadEmails('INBOX', false),
+        loadUserProfile(),
+        loadMailboxStats(),
+        loadTodayStats()
+      ]).catch(err => {
+        console.error('Error loading initial data:', err);
+      });
     } else {
       console.log('🔍 No auth callback, checking auth status...');
       checkAuthentication();
     }
-  }, []);
+
+    return () => {
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    if (authenticated) {
-      loadEmails();
-      loadMailboxStats();
-      loadTodayStats();
-    }
-  }, [authenticated, selectedLabel]);
+    if (!authenticated) return;
+
+    console.log('📬 Label changed to:', selectedLabel);
+
+    setNextPageToken(undefined);
+    setSelectedEmail(null);
+
+    loadEmails(selectedLabel, false);
+  }, [selectedLabel, authenticated, loadEmails]);
 
   const checkAuthentication = async () => {
     try {
@@ -62,10 +197,12 @@ function Email({ sidebarVisible }: EmailProps) {
       setAuthenticated(isAuth);
       if (isAuth) {
         console.log('✅ User is authenticated, loading data...');
-        loadEmails();
-        loadUserProfile();
-        loadMailboxStats();
-        loadTodayStats();
+        await Promise.all([
+          loadEmails('INBOX', false),
+          loadUserProfile(),
+          loadMailboxStats(),
+          loadTodayStats()
+        ]);
       } else {
         console.log('❌ User is NOT authenticated');
       }
@@ -98,93 +235,41 @@ function Email({ sidebarVisible }: EmailProps) {
     }
   };
 
-  const loadEmails = async (loadMore = false) => {
+  const handleForceSync = async () => {
+    setLoading(true);
     try {
-      if (loadMore) setLoadingMore(true);
-      else setLoading(true);
-      
-      const response = await emailAPI.getEmails({ 
-        labelIds: selectedLabel,
-        maxResults: 20,
-        pageToken: loadMore ? nextPageToken : undefined
-      });
-      
-      if (loadMore) {
-        setEmails(prev => [...prev, ...response.messages]);
-      } else {
-        setEmails(response.messages || []);
-      }
-      
-      setNextPageToken(response.nextPageToken);
+      // Wyczyść cache w emailAPI
+      emailAPI.invalidateLabelCache(selectedLabel);
+
+      // Przeładuj z serwera
+      await emailAPI.refreshEmails(selectedLabel);
+      await loadEmails(selectedLabel, false);
+      await loadMailboxStats();
+      await loadTodayStats();
+
+      console.log('✅ Force sync complete');
     } catch (error) {
-      console.error('Error loading emails:', error);
+      console.error('❌ Force sync failed:', error);
     } finally {
       setLoading(false);
-      setLoadingMore(false);
-    }
-  };
-
-  const loadUserProfile = async () => {
-    try {
-      const profile = await emailAPI.getUserProfile();
-      setUserProfile(profile);
-    } catch (error) {
-      console.error('Error loading user profile:', error);
-    }
-  };
-
-  const loadMailboxStats = async () => {
-    try {
-      const stats = await emailAPI.getMailboxStats();
-      console.log('📊 ===== MAILBOX STATS DEBUG =====');
-      console.log('Raw stats from API:', stats);
-      console.log('Stats keys:', Object.keys(stats));
-      console.log('INBOX:', stats['INBOX']);
-      console.log('SENT:', stats['SENT']);
-      console.log('DRAFT:', stats['DRAFT']);
-      console.log('STARRED:', stats['STARRED']);
-      console.log('TRASH:', stats['TRASH']);
-      console.log('================================');
-      setMailboxStats(stats);
-    } catch (error) {
-      console.error('Error loading mailbox stats:', error);
-    }
-  };
-
-  const loadTodayStats = async () => {
-    try {
-      const stats = await emailAPI.getTodayStats();
-      console.log('📅 Today stats:', stats);
-      setTodayStats(stats);
-    } catch (error) {
-      console.error('Error loading today stats:', error);
     }
   };
 
   const handleEmailClick = async (email: EmailMessage) => {
     try {
       const fullEmail = await emailAPI.getEmail(email.id);
-      console.log('📧 ===== LOADED EMAIL DEBUG =====');
-      console.log('ID:', fullEmail.id);
-      console.log('Subject:', fullEmail.subject);
-      console.log('hasAttachment flag:', fullEmail.hasAttachment);
-      console.log('Attachments array:', fullEmail.attachments);
-      console.log('Attachments length:', fullEmail.attachments?.length);
-      console.log('InlineImages array:', fullEmail.inlineImages);
-      console.log('InlineImages length:', fullEmail.inlineImages?.length);
-      console.log('Full email object:', fullEmail);
-      console.log('==============================');
-      
+      console.log('📧 Loaded email:', fullEmail.id, 'hasAttachment:', fullEmail.hasAttachment);
+      console.log('📧 Email labels:', fullEmail.labelIds); // ✅ DODAJ TO
+
       setSelectedEmail(fullEmail);
 
-      // Mark as read if unread
       if (email.unread) {
         await emailAPI.markEmail(email.id, true);
         setEmails(prev => prev.map(e =>
           e.id === email.id ? { ...e, unread: false } : e
         ));
         loadMailboxStats();
-        loadTodayStats(); // 🔥 Odśwież dzisiejsze statystyki!
+        loadTodayStats();
       }
     } catch (error) {
       console.error('Error loading email details:', error);
@@ -196,7 +281,8 @@ function Email({ sidebarVisible }: EmailProps) {
       await emailAPI.sendEmail(composeData);
       setShowCompose(false);
       setComposeData({ to: '', subject: '', body: '' });
-      loadEmails();
+
+      loadEmails(selectedLabel, false);
       loadMailboxStats();
       loadTodayStats();
     } catch (error) {
@@ -219,17 +305,10 @@ function Email({ sidebarVisible }: EmailProps) {
       alert('Błąd usuwania wiadomości');
     }
   };
-
-  const handleLoadMore = () => {
-    if (nextPageToken && !loadingMore) {
-      loadEmails(true);
-    }
-  };
-
-  const renderEmailBody = (email: EmailMessage) => {
+  
+  const sanitizeEmailBody = (email: EmailMessage): string => {
     let htmlContent = email.body || email.snippet;
-    
-    // Replace inline images (cid:) with actual attachment URLs
+
     if (email.inlineImages && email.inlineImages.length > 0) {
       email.inlineImages.forEach(image => {
         if (image.contentId) {
@@ -239,8 +318,79 @@ function Email({ sidebarVisible }: EmailProps) {
         }
       });
     }
-    
-    return htmlContent;
+
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(htmlContent, 'text/html');
+
+    const scriptTags = doc.querySelectorAll('script');
+    scriptTags.forEach(tag => tag.remove());
+
+    const styleTags = doc.querySelectorAll('style');
+    styleTags.forEach(tag => {
+      const styleContent = tag.textContent || '';
+      const dangerousSelectors = [
+        'body', 'html', '#root', 'header', 'nav', 'aside',
+        'main', 'footer', '.sidebar', '@import', '@font-face'
+      ];
+
+      let shouldRemove = false;
+      for (const selector of dangerousSelectors) {
+        if (styleContent.toLowerCase().includes(selector.toLowerCase())) {
+          shouldRemove = true;
+          break;
+        }
+      }
+
+      if (shouldRemove) {
+        console.log('🚫 Removed dangerous <style> tag');
+        tag.remove();
+      }
+    });
+
+    const allElements = doc.querySelectorAll('*');
+    allElements.forEach(element => {
+      Array.from(element.attributes).forEach(attr => {
+        if (attr.name.startsWith('on')) {
+          element.removeAttribute(attr.name);
+        }
+      });
+
+      if (element.tagName === 'A') {
+        const href = element.getAttribute('href');
+        if (href && href.toLowerCase().startsWith('javascript:')) {
+          element.removeAttribute('href');
+        }
+      }
+
+      const style = element.getAttribute('style');
+      if (style) {
+        const blockedProperties = [
+          'position: fixed',
+          'position:fixed',
+          'position: sticky',
+          'position:sticky',
+        ];
+
+        let cleanStyle = style;
+
+        blockedProperties.forEach(prop => {
+          const regex = new RegExp(prop, 'gi');
+          cleanStyle = cleanStyle.replace(regex, 'position: relative');
+        });
+
+        cleanStyle = cleanStyle.replace(/z-index\s*:\s*(\d+)/gi, (match, value) => {
+          const zIndex = parseInt(value);
+          if (zIndex > 100) {
+            return 'z-index: 10';
+          }
+          return match;
+        });
+
+        element.setAttribute('style', cleanStyle);
+      }
+    });
+
+    return doc.body.innerHTML;
   };
 
   const getInitials = (email: string) => {
@@ -266,6 +416,23 @@ function Email({ sidebarVisible }: EmailProps) {
     } else {
       return date.toLocaleDateString('pl-PL');
     }
+  };
+
+  const getLabelDisplayName = (label: string) => {
+    const names: Record<string, string> = {
+      'INBOX': 'Odebrane',
+      'SENT': 'Wysłane',
+      'DRAFT': 'Robocze',
+      'TRASH': 'Kosz',
+      'SPAM': 'Spam',
+      'STARRED': 'Oznaczone gwiazdką',
+      'CATEGORY_SOCIAL': 'Społeczność',
+      'CATEGORY_PROMOTIONS': 'Oferty',
+      'CATEGORY_UPDATES': 'Aktualizacje',
+      'CATEGORY_FORUMS': 'Fora',
+      'CATEGORY_PERSONAL': 'Osobiste'
+    };
+    return names[label] || label;
   };
 
   if (loading && emails.length === 0) {
@@ -324,21 +491,15 @@ function Email({ sidebarVisible }: EmailProps) {
       <main className="flex-1 overflow-hidden flex flex-col bg-[#15161b]">
         <div className="flex items-center justify-between px-8 py-4 border-b border-white/5">
           <div>
-            <h2 className="text-2xl font-bold">
-              {selectedLabel === 'INBOX' ? 'Odebrane' :
-                selectedLabel === 'SENT' ? 'Wysłane' :
-                  selectedLabel === 'DRAFT' ? 'Robocze' :
-                    selectedLabel === 'TRASH' ? 'Kosz' : 'Email'}
-            </h2>
-            <p className="text-sm text-white/40">
-              {userProfile?.email}
-            </p>
+            <h2 className="text-2xl font-bold">{getLabelDisplayName(selectedLabel)}</h2>
+            <p className="text-sm text-white/40">{userProfile?.email}</p>
           </div>
           <div className="flex items-center gap-2">
             <button
-              onClick={() => loadEmails()}
+              onClick={handleForceSync}
               className="px-3 py-2 bg-white/5 hover:bg-white/10 rounded-lg transition-colors"
-              title="Odśwież"
+              title="Wymuś pełną synchronizację"
+              disabled={loading}
             >
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
@@ -358,7 +519,14 @@ function Email({ sidebarVisible }: EmailProps) {
 
         <div className="flex-1 overflow-hidden flex">
           <div className={`${selectedEmail ? 'w-1/3' : 'flex-1'} overflow-y-auto custom-scrollbar border-r border-white/5`}>
-            {emails.length === 0 ? (
+            {loading ? (
+              <div className="flex items-center justify-center h-full">
+                <div className="text-center">
+                  <div className="w-12 h-12 border-4 border-[#5b9dff] border-t-transparent rounded-full animate-spin mx-auto mb-3"></div>
+                  <p className="text-sm text-white/60">Ładowanie wiadomości...</p>
+                </div>
+              </div>
+            ) : emails.length === 0 ? (
               <div className="flex items-center justify-center h-full text-white/40">
                 <div className="text-center">
                   <svg className="w-16 h-16 mx-auto mb-4 opacity-20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -391,7 +559,6 @@ function Email({ sidebarVisible }: EmailProps) {
                           <h5 className={`text-sm mb-1 truncate ${email.unread ? 'font-medium' : 'text-white/60'}`}>
                             {email.subject || '(brak tematu)'}
                           </h5>
-                          {/* 🔥 FIX: line-clamp-2 zamiast line-clamp-1 */}
                           <p className="text-sm text-white/40 line-clamp-2 flex items-center gap-2">
                             {email.snippet}
                             {email.hasAttachment && <span title="Ma załącznik" className="flex-shrink-0">📎</span>}
@@ -401,16 +568,26 @@ function Email({ sidebarVisible }: EmailProps) {
                     </div>
                   ))}
                 </div>
-                
+
                 {nextPageToken && (
                   <div className="p-4 text-center border-t border-white/5">
-                    <button
-                      onClick={handleLoadMore}
-                      disabled={loadingMore}
-                      className="px-4 py-2 bg-white/5 hover:bg-white/10 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-sm"
-                    >
-                      {loadingMore ? 'Ładowanie...' : 'Załaduj więcej'}
-                    </button>
+                    {loadingMore ? (
+                      <div className="flex items-center justify-center gap-3 py-2">
+                        <div className="w-5 h-5 border-2 border-[#5b9dff] border-t-transparent rounded-full animate-spin"></div>
+                        <span className="text-sm text-white/60">Ładowanie kolejnych wiadomości...</span>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={handleLoadMore}
+                        disabled={!nextPageToken || loadingMore}
+                        className="px-4 py-2 bg-white/5 hover:bg-white/10 rounded-lg transition-colors text-sm flex items-center gap-2 mx-auto disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                        </svg>
+                        Załaduj więcej
+                      </button>
+                    )}
                   </div>
                 )}
               </>
@@ -419,6 +596,7 @@ function Email({ sidebarVisible }: EmailProps) {
 
           {selectedEmail && (
             <div className="flex-1 flex flex-col overflow-hidden">
+              {/* ... reszta kodu email preview bez zmian ... */}
               <div className="p-6 border-b border-white/5">
                 <div className="flex items-start justify-between mb-4">
                   <h2 className="text-2xl font-bold">{selectedEmail.subject || '(brak tematu)'}</h2>
@@ -465,13 +643,13 @@ function Email({ sidebarVisible }: EmailProps) {
               </div>
 
               <div className="flex-1 overflow-y-auto custom-scrollbar p-6">
-                {/* 🔥 FIX: Usunąłem prose prose-invert które nadpisywało czcionki */}
-                <div
-                  className="email-body mb-6 leading-relaxed text-white/90"
-                  dangerouslySetInnerHTML={{ __html: renderEmailBody(selectedEmail) }}
-                />
-                
-                {/* Załączniki */}
+                <div className="email-content-wrapper">
+                  <div
+                    className="email-body-isolated"
+                    dangerouslySetInnerHTML={{ __html: sanitizeEmailBody(selectedEmail) }}
+                  />
+                </div>
+
                 {selectedEmail.attachments && selectedEmail.attachments.length > 0 && (
                   <div className="mt-6 pt-6 border-t-2 border-[#5b9dff]/50">
                     <h4 className="text-lg font-bold mb-4 text-white flex items-center gap-2">
@@ -481,30 +659,43 @@ function Email({ sidebarVisible }: EmailProps) {
                       📎 Załączniki ({selectedEmail.attachments.length})
                     </h4>
                     <div className="space-y-3">
-                      {selectedEmail.attachments.map((attachment, index) => (
-                        <a
-                          key={attachment.id || index}
-                          href={emailAPI.getAttachmentUrl(selectedEmail.id, attachment.id)}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="flex items-center gap-4 p-4 bg-[#5b9dff]/10 hover:bg-[#5b9dff]/20 border border-[#5b9dff]/30 rounded-lg transition-all group"
-                        >
-                          <div className="w-12 h-12 bg-[#5b9dff]/30 rounded-lg flex items-center justify-center flex-shrink-0">
-                            <svg className="w-6 h-6 text-[#5b9dff]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                            </svg>
-                          </div>
-                          <div className="flex-1 min-w-0">
-                            <div className="text-base font-semibold truncate text-white">{attachment.filename}</div>
-                            <div className="text-sm text-white/60">
-                              {(attachment.size / 1024).toFixed(1)} KB • {attachment.mimeType}
+                      {selectedEmail.attachments.map((attachment, index) => {
+                        const attachmentId = attachment.id || `attachment-${index}`;
+                        const downloadUrl = attachment.id
+                          ? emailAPI.getAttachmentUrl(selectedEmail.id, attachment.id)
+                          : '#';
+
+                        return (
+                          <a
+                            key={attachmentId}
+                            href={downloadUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="flex items-center gap-4 p-4 bg-[#5b9dff]/10 hover:bg-[#5b9dff]/20 border border-[#5b9dff]/30 rounded-lg transition-all group"
+                            onClick={(e) => {
+                              if (!attachment.id) {
+                                e.preventDefault();
+                                alert('Załącznik niedostępny');
+                              }
+                            }}
+                          >
+                            <div className="w-12 h-12 bg-[#5b9dff]/30 rounded-lg flex items-center justify-center flex-shrink-0">
+                              <svg className="w-6 h-6 text-[#5b9dff]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                              </svg>
                             </div>
-                          </div>
-                          <svg className="w-6 h-6 text-[#5b9dff]/60 group-hover:text-[#5b9dff] transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                          </svg>
-                        </a>
-                      ))}
+                            <div className="flex-1 min-w-0">
+                              <div className="text-base font-semibold truncate text-white">{attachment.filename}</div>
+                              <div className="text-sm text-white/60">
+                                {(attachment.size / 1024).toFixed(1)} KB • {attachment.mimeType}
+                              </div>
+                            </div>
+                            <svg className="w-6 h-6 text-[#5b9dff]/60 group-hover:text-[#5b9dff] transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                            </svg>
+                          </a>
+                        );
+                      })}
                     </div>
                   </div>
                 )}

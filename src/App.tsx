@@ -147,8 +147,8 @@ function App() {
                 onClick={() => setShowAppMenu(!showAppMenu)}
                 className="px-3 h-11 flex items-center gap-2 hover:bg-white/5 transition-colors"
               >
-                <img src="../../src-tauri/icons/nexdeck_logo.png" alt="NexDeck" className="w-6 h-6" />
-                <span className="text-sm font-extrabold text-[18px]">NexDeck</span>
+                <img src="../../src-tauri/icons/nexdeck_logo_full.png" alt="NexDeck" className="w-[130px]" />
+                {/* <span className="text-sm font-extrabold text-[18px]">NexDeck</span> */}
               </button>
 
               {showAppMenu && (

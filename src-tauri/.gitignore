@@ -2,3 +2,9 @@
 # will have compiled files and executables
 /target/
 /gen/schemas
+# ... existing ignore entries ...
+
+# Local Tauri cache DB (do not commit)
+src-tauri/nexdeck_cache.sqlite3
+# Also ignore DB in app data (just in case)
+nexdeck_cache.sqlite3

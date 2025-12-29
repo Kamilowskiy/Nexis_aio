@@ -2,7 +2,7 @@ import { invoke } from '@tauri-apps/api/core';
 
 const API_BASE_URL = 'http://localhost:3001';
 
-// Types (same as before)
+// Types (zachowane zgodnie z oryginałem)
 export interface Attachment {
   id: string;
   filename: string;
@@ -68,17 +68,65 @@ export interface MailboxStats {
   };
 }
 
+/**
+ * EmailAPI (Rust-enabled) - zoptymalizowana wersja (poprawiona)
+ *
+ * Poprawki w tej wersji:
+ * - Bezpieczne użycie console.time/console.timeEnd (unikamy "Timer already exists" i "does not exist")
+ * - Klasyczny frontendowy cache metadata/body
+ * - Prefetching w tle (nieblokujące)
+ * - Fallback do Node.js tam, gdzie Rust zwraca puste dane (np. mailbox stats)
+ */
 class EmailAPI {
   private accessToken: string | null = null;
   private useRust: boolean = false;
+  private rustInitialized: boolean = false;
+
+  // Cache metadata + body
+  private metadataCache: { messages: EmailMessage[]; fetchedAt: number } | null = null;
+  private bodyCache: Map<string, EmailMessage> = new Map();
+
+  // konfigurowalne TTLy
+  private metadataTTL = 5 * 1000; // 5s - krótki TTL metadata, UI responsiveness
+  private bodyTTL = 60 * 1000; // 60s - cache na ciała maili w pamięci JS
+
+  // prefetch concurrency
+  private prefetchConcurrency = 3;
+
+  // active timers set to avoid duplicate console.time/timeEnd calls
+  private activeTimers: Set<string> = new Set();
 
   constructor() {
-    // Check if running in Tauri (Rust available)
+    // detect Tauri / Rust availability
     this.useRust = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
     console.log('🦀 EmailAPI initialized:', this.useRust ? 'Using Rust' : 'Using Node.js');
   }
 
-  // ===== AUTHENTICATION =====
+  // ===== safe console timer helpers =====
+  private startTimer(label: string) {
+    try {
+      if (!this.activeTimers.has(label)) {
+        console.time(label);
+        this.activeTimers.add(label);
+      }
+    } catch {
+      // ignore - some consoles may behave differently
+    }
+  }
+
+  private endTimer(label: string) {
+    try {
+      if (this.activeTimers.has(label)) {
+        console.timeEnd(label);
+        this.activeTimers.delete(label);
+      }
+    } catch {
+      // ignore
+      this.activeTimers.delete(label);
+    }
+  }
+
+  // ===== AUTH / INIT =====
 
   async getAuthUrl(): Promise<string> {
     const response = await fetch(`${API_BASE_URL}/auth/google`);
@@ -90,12 +138,12 @@ class EmailAPI {
     try {
       const response = await fetch(`${API_BASE_URL}/auth/status`);
       const data = await response.json();
-      
-      // If authenticated, get the token for Rust
-      if (data.authenticated && this.useRust) {
+
+      // If authenticated and running in Tauri, attempt to init Rust client (only once)
+      if (data.authenticated && this.useRust && !this.rustInitialized) {
         await this.initRustClient();
       }
-      
+
       return data.authenticated;
     } catch (error) {
       console.error('Error checking auth status:', error);
@@ -103,34 +151,87 @@ class EmailAPI {
     }
   }
 
-  private async initRustClient(): Promise<void> {
+  async initRustClient(): Promise<void> {
+    if (!this.useRust) return;
+    if (this.rustInitialized) return;
+
     try {
-      // Get access token from backend
       const response = await fetch(`${API_BASE_URL}/auth/token`);
-      const data = await response.json();
-      
-      if (data.accessToken) {
-        this.accessToken = data.accessToken;
-        
-        // Initialize Rust client
-        await invoke('init_gmail_client', {
-          accessToken: data.accessToken
-        });
-        
-        console.log('✅ Rust Gmail client initialized');
+      if (!response.ok) {
+        throw new Error('No token from backend');
       }
+      const data = await response.json();
+      if (!data.accessToken) {
+        throw new Error('accessToken missing');
+      }
+      this.accessToken = data.accessToken;
+
+      // Wywołanie invoke tylko raz — inicjalizuje GmailClient po stronie Rust
+      await invoke('init_gmail_client', {
+        accessToken: data.accessToken,
+      });
+
+      this.rustInitialized = true;
+      console.log('✅ Rust Gmail client initialized (frontend)');
     } catch (error) {
       console.error('Error initializing Rust client:', error);
-      this.useRust = false; // Fallback to Node.js
+      // Disable rust usage to fallback gracefully
+      this.useRust = false;
+      this.rustInitialized = false;
+      this.accessToken = null;
     }
   }
 
   async logout(): Promise<{ success: boolean }> {
     this.accessToken = null;
+    this.rustInitialized = false;
+    // clear caches
+    this.metadataCache = null;
+    this.bodyCache.clear();
     const response = await fetch(`${API_BASE_URL}/auth/logout`, {
-      method: 'POST'
+      method: 'POST',
     });
     return response.json();
+  }
+
+  // ===== HELPERS (frontend cache and prefetch) =====
+
+  private cacheMetadata(messages: EmailMessage[]) {
+    this.metadataCache = { messages, fetchedAt: Date.now() };
+  }
+
+  private cacheBody(message: EmailMessage) {
+    this.bodyCache.set(message.id, message);
+    // optional: schedule eviction after TTL
+    setTimeout(() => {
+      this.bodyCache.delete(message.id);
+    }, this.bodyTTL);
+  }
+
+  private async prefetchBodies(ids: string[]) {
+    if (!ids || ids.length === 0) return;
+    // naive concurrency control: sequential groups of prefetchConcurrency
+    const queue = [...ids];
+    const workers: Promise<void>[] = [];
+    for (let i = 0; i < this.prefetchConcurrency; i++) {
+      workers.push((async () => {
+        while (queue.length) {
+          const id = queue.shift();
+          if (!id) break;
+          try {
+            if (!this.bodyCache.has(id)) {
+              const full = await this.getEmail(id);
+              void full;
+            }
+          } catch (e) {
+            // ignore prefetch errors
+            console.debug('Prefetch error', e);
+          }
+        }
+      })());
+    }
+    // Run workers but don't await them to avoid blocking UI; still let them execute in background
+    // We intentionally don't await Promise.all(workers) here.
   }
 
   // ===== EMAIL OPERATIONS =====
@@ -138,82 +239,124 @@ class EmailAPI {
   async getEmails(options: GetEmailsOptions = {}): Promise<EmailListResponse> {
     const { maxResults = 20, pageToken, labelIds = 'INBOX' } = options;
 
-    // ⚡ USE RUST if available (5-10x faster!)
-    if (this.useRust && this.accessToken) {
-      try {
-        console.time('⚡ Rust getEmails');
-        const result = await invoke<EmailListResponse>('get_emails_rust', {
-          options: {
-            maxResults,
-            pageToken,
-            labelIds
-          }
-        });
-        console.timeEnd('⚡ Rust getEmails');
-        return result;
-      } catch (error) {
-        console.error('Rust getEmails failed, falling back to Node.js:', error);
+    // If we have recent metadata cached, return it (fast UI response)
+    const now = Date.now();
+    if (this.metadataCache && (now - this.metadataCache.fetchedAt) < this.metadataTTL && !pageToken) {
+      const messages = this.metadataCache.messages.slice(0, maxResults);
+      const toPrefetch = messages.slice(0, 3).map(m => m.id);
+      void this.prefetchBodies(toPrefetch);
+      return { messages, nextPageToken: undefined };
+    }
+
+    if (this.useRust) {
+      if (!this.rustInitialized) {
+        await this.initRustClient();
+      }
+      if (this.rustInitialized) {
+        const timerLabel = '⚡ Rust getEmails';
+        this.startTimer(timerLabel);
+        try {
+          const result = await invoke<EmailListResponse>('get_emails_rust', {
+            options: {
+              maxResults,
+              pageToken,
+              labelIds
+            }
+          });
+          const messages = result.messages || [];
+          this.cacheMetadata(messages);
+          const toPrefetch = messages.slice(0, 3).map(m => m.id);
+          void this.prefetchBodies(toPrefetch);
+          return result;
+        } catch (error) {
+          console.error('Rust getEmails failed, falling back to Node.js:', error);
+        } finally {
+          this.endTimer(timerLabel);
+        }
       }
     }
 
     // Fallback to Node.js
-    console.time('🐌 Node.js getEmails');
-    const params = new URLSearchParams({
-      maxResults: maxResults.toString(),
-      labelIds
-    });
-    
-    if (pageToken) {
-      params.append('pageToken', pageToken);
+    const timerLabelNode = '🐌 Node.js getEmails';
+    this.startTimer(timerLabelNode);
+    try {
+      const params = new URLSearchParams({
+        maxResults: maxResults.toString(),
+        labelIds,
+      });
+      if (pageToken) params.append('pageToken', pageToken);
+      const response = await fetch(`${API_BASE_URL}/api/emails?${params}`);
+      if (!response.ok) {
+        throw new Error('Failed to get emails');
+      }
+      const result = await response.json();
+      this.cacheMetadata(result.messages || []);
+      const toPrefetch = (result.messages || []).slice(0, 3).map((m: EmailMessage) => m.id);
+      void this.prefetchBodies(toPrefetch);
+      return result;
+    } finally {
+      this.endTimer(timerLabelNode);
     }
-
-    const response = await fetch(`${API_BASE_URL}/api/emails?${params}`);
-    if (!response.ok) {
-      throw new Error('Failed to get emails');
-    }
-    const result = await response.json();
-    console.timeEnd('🐌 Node.js getEmails');
-    return result;
   }
 
   async getEmail(id: string): Promise<EmailMessage> {
-    // ⚡ USE RUST if available (10x faster parsing!)
-    if (this.useRust && this.accessToken) {
-      try {
-        console.time('⚡ Rust getEmail');
-        const result = await invoke<EmailMessage>('get_email_rust', {
-          messageId: id
-        });
-        console.timeEnd('⚡ Rust getEmail');
-        return result;
-      } catch (error) {
-        console.error('Rust getEmail failed, falling back to Node.js:', error);
+    const cached = this.bodyCache.get(id);
+    if (cached) {
+      return cached;
+    }
+
+    if (this.useRust) {
+      if (!this.rustInitialized) {
+        await this.initRustClient();
+      }
+      if (this.rustInitialized) {
+        const timerLabel = '⚡ Rust getEmail';
+        this.startTimer(timerLabel);
+        try {
+          const result = await invoke<EmailMessage>('get_email_rust', {
+            messageId: id
+          });
+          this.cacheBody(result);
+          return result;
+        } catch (error) {
+          console.error('Rust getEmail failed, falling back to Node.js:', error);
+        } finally {
+          this.endTimer(timerLabel);
+        }
       }
     }
 
-    // Fallback to Node.js
-    console.time('🐌 Node.js getEmail');
-    const response = await fetch(`${API_BASE_URL}/api/emails/${id}`);
-    if (!response.ok) {
-      throw new Error('Failed to get email');
+    const timerLabelNode = '🐌 Node.js getEmail';
+    this.startTimer(timerLabelNode);
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/emails/${id}`);
+      if (!response.ok) {
+        throw new Error('Failed to get email');
+      }
+      const result = await response.json();
+      this.cacheBody(result);
+      return result;
+    } finally {
+      this.endTimer(timerLabelNode);
     }
-    const result = await response.json();
-    console.timeEnd('🐌 Node.js getEmail');
-    return result;
   }
 
   async sendEmail(emailData: EmailData): Promise<{ success: boolean; id: string }> {
-    // ⚡ USE RUST if available
-    if (this.useRust && this.accessToken) {
-      try {
-        const id = await invoke<string>('send_email_rust', { emailData });
-        return { success: true, id };
-      } catch (error) {
-        console.error('Rust sendEmail failed, falling back to Node.js:', error);
+    if (this.useRust) {
+      if (!this.rustInitialized) {
+        await this.initRustClient();
+      }
+      if (this.rustInitialized) {
+        try {
+          const id = await invoke<string>('send_email_rust', { emailData });
+          this.metadataCache = null;
+          return { success: true, id };
+        } catch (error) {
+          console.error('Rust sendEmail failed, falling back to Node.js:', error);
+        }
       }
     }
 
-    // Fallback to Node.js
     const response = await fetch(`${API_BASE_URL}/api/emails/send`, {
       method: 'POST',
       headers: {
@@ -221,7 +364,7 @@ class EmailAPI {
       },
       body: JSON.stringify(emailData)
     });
-    
+
     if (!response.ok) {
       throw new Error('Failed to send email');
     }
@@ -229,52 +372,52 @@ class EmailAPI {
   }
 
   async markEmail(id: string, read: boolean): Promise<{ success: boolean }> {
-    // ⚡ USE RUST if available
-    if (this.useRust && this.accessToken) {
+    if (this.useRust) {
       try {
-        await invoke('mark_email_rust', {
-          messageId: id,
-          read
-        });
+        await invoke('mark_email_rust', { messageId: id, read });
+        if (this.metadataCache) {
+          this.metadataCache.messages = this.metadataCache.messages.map(m => m.id === id ? { ...m, unread: !read } : m);
+        }
+        const cached = this.bodyCache.get(id);
+        if (cached) { cached.unread = !read; this.bodyCache.set(id, cached); }
         return { success: true };
-      } catch (error) {
-        console.error('Rust markEmail failed, falling back to Node.js:', error);
+      } catch (e) {
+        console.error(e);
       }
     }
 
-    // Fallback to Node.js
-    const response = await fetch(`${API_BASE_URL}/api/emails/${id}/mark`, {
+    const res = await fetch(`${API_BASE_URL}/api/emails/${id}/mark`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({ read })
     });
-    
-    if (!response.ok) {
+
+    if (!res.ok) {
       throw new Error('Failed to mark email');
     }
-    return response.json();
+    return res.json();
   }
 
   async deleteEmail(id: string): Promise<{ success: boolean }> {
-    // ⚡ USE RUST if available
-    if (this.useRust && this.accessToken) {
+    if (this.useRust) {
       try {
-        await invoke('delete_email_rust', {
-          messageId: id
-        });
+        await invoke('delete_email_rust', { messageId: id });
+        if (this.metadataCache) {
+          this.metadataCache.messages = this.metadataCache.messages.filter(m => m.id !== id);
+        }
+        this.bodyCache.delete(id);
         return { success: true };
-      } catch (error) {
-        console.error('Rust deleteEmail failed, falling back to Node.js:', error);
+      } catch (e) {
+        console.error('Rust deleteEmail failed, falling back to Node.js:', e);
       }
     }
 
-    // Fallback to Node.js
     const response = await fetch(`${API_BASE_URL}/api/emails/${id}`, {
       method: 'DELETE'
     });
-    
+
     if (!response.ok) {
       throw new Error('Failed to delete email');
     }
@@ -282,34 +425,25 @@ class EmailAPI {
   }
 
   async getTodayStats(): Promise<{ totalToday: number; unreadToday: number }> {
-    // ⚡ USE RUST if available (FAST parallel implementation!)
-    if (this.useRust && this.accessToken) {
+    if (this.useRust) {
       try {
-        console.time('⚡ Rust getTodayStats');
         const result = await invoke<{ totalToday: number; unreadToday: number }>('get_today_stats_rust');
-        console.timeEnd('⚡ Rust getTodayStats');
         return result;
       } catch (error) {
         console.error('Rust getTodayStats failed, falling back to Node.js:', error);
       }
     }
 
-    // Fallback to Node.js
-    console.time('🐌 Node.js getTodayStats');
     const response = await fetch(`${API_BASE_URL}/api/emails/stats/today`);
     if (!response.ok) {
       throw new Error('Failed to get today stats');
     }
     const result = await response.json();
-    console.timeEnd('🐌 Node.js getTodayStats');
     return result;
   }
 
-  // ===== MAILBOX OPERATIONS =====
-
   async getUserProfile(): Promise<UserProfile> {
-    // ⚡ USE RUST if available
-    if (this.useRust && this.accessToken) {
+    if (this.useRust) {
       try {
         return await invoke<UserProfile>('get_user_profile_rust');
       } catch (error) {
@@ -317,7 +451,6 @@ class EmailAPI {
       }
     }
 
-    // Fallback to Node.js
     const response = await fetch(`${API_BASE_URL}/api/user/profile`);
     if (!response.ok) {
       throw new Error('Failed to get user profile');
@@ -326,27 +459,39 @@ class EmailAPI {
   }
 
   async getMailboxStats(): Promise<MailboxStats> {
-    // ⚡ USE RUST if available (8x faster - parallel fetching!)
-    if (this.useRust && this.accessToken) {
-      try {
-        console.time('⚡ Rust getMailboxStats');
-        const result = await invoke<{ stats: MailboxStats }>('get_mailbox_stats_rust');
-        console.timeEnd('⚡ Rust getMailboxStats');
-        return result.stats;
-      } catch (error) {
-        console.error('Rust getMailboxStats failed, falling back to Node.js:', error);
+    // Try Rust path first
+    if (this.useRust) {
+      if (!this.rustInitialized) await this.initRustClient();
+      if (this.rustInitialized) {
+        const timerLabel = '⚡ Rust getMailboxStats';
+        this.startTimer(timerLabel);
+        try {
+          // rust returns { stats: MailboxStats } according to earlier contract
+          const result = await invoke<{ stats: MailboxStats }>('get_mailbox_stats_rust');
+          // If Rust returned empty map, fallback to Node.js to ensure frontend has data
+          if (result && result.stats && Object.keys(result.stats).length > 0) {
+            return result.stats;
+          } else {
+            console.debug('Rust returned empty mailbox stats, falling back to Node.js');
+          }
+        } catch (error) {
+          console.error('Rust getMailboxStats failed, falling back to Node.js:', error);
+        } finally {
+          this.endTimer(timerLabel);
+        }
       }
     }
 
-    // Fallback to Node.js
-    console.time('🐌 Node.js getMailboxStats');
-    const response = await fetch(`${API_BASE_URL}/api/mailbox/stats`);
-    if (!response.ok) {
-      throw new Error('Failed to get mailbox stats');
+    const timerLabelNode = '🐌 Node.js getMailboxStats';
+    this.startTimer(timerLabelNode);
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/mailbox/stats`);
+      if (!response.ok) throw new Error('Failed to get mailbox stats');
+      const result = await response.json();
+      return result;
+    } finally {
+      this.endTimer(timerLabelNode);
     }
-    const result = await response.json();
-    console.timeEnd('🐌 Node.js getMailboxStats');
-    return result;
   }
 
   async getLabels(): Promise<Label[]> {
@@ -356,8 +501,6 @@ class EmailAPI {
     }
     return response.json();
   }
-
-  // ===== ATTACHMENTS =====
 
   async getAttachment(messageId: string, attachmentId: string): Promise<{ data: string; size: number }> {
     const response = await fetch(`${API_BASE_URL}/api/emails/${messageId}/attachments/${attachmentId}`);

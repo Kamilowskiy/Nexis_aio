@@ -47,7 +47,20 @@ export default function authRoutes(oauth2Client, userTokens) {
     res.json({ authenticated: !!userTokens[userId] });
   });
 
-  // 4. Logout
+  // 4. Get access token (for Rust client) 🦀
+  router.get('/token', (req, res) => {
+    const userId = 'default_user';
+    const tokens = userTokens[userId];
+    
+    if (!tokens || !tokens.access_token) {
+      return res.status(401).json({ error: 'Not authenticated' });
+    }
+    
+    console.log('✅ Zwracam access_token dla Rust');
+    res.json({ accessToken: tokens.access_token });
+  });
+
+  // 5. Logout
   router.post('/logout', (req, res) => {
     const userId = 'default_user';
     delete userTokens[userId];

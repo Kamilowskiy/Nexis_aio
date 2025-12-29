@@ -105,7 +105,7 @@ function Email({ sidebarVisible }: EmailProps) {
       
       const response = await emailAPI.getEmails({ 
         labelIds: selectedLabel,
-        maxResults: 20, // Zmniejszone z 100 na 20 dla responsywności
+        maxResults: 20,
         pageToken: loadMore ? nextPageToken : undefined
       });
       
@@ -184,6 +184,7 @@ function Email({ sidebarVisible }: EmailProps) {
           e.id === email.id ? { ...e, unread: false } : e
         ));
         loadMailboxStats();
+        loadTodayStats(); // 🔥 Odśwież dzisiejsze statystyki!
       }
     } catch (error) {
       console.error('Error loading email details:', error);
@@ -197,6 +198,7 @@ function Email({ sidebarVisible }: EmailProps) {
       setComposeData({ to: '', subject: '', body: '' });
       loadEmails();
       loadMailboxStats();
+      loadTodayStats();
     } catch (error) {
       console.error('Error sending email:', error);
       alert('Błąd wysyłania wiadomości');
@@ -211,6 +213,7 @@ function Email({ sidebarVisible }: EmailProps) {
         setSelectedEmail(null);
       }
       loadMailboxStats();
+      loadTodayStats();
     } catch (error) {
       console.error('Error deleting email:', error);
       alert('Błąd usuwania wiadomości');
@@ -238,44 +241,6 @@ function Email({ sidebarVisible }: EmailProps) {
     }
     
     return htmlContent;
-  };
-
-  const renderAttachments = (email: EmailMessage) => {
-    if (!email.attachments || email.attachments.length === 0) {
-      return null;
-    }
-
-    return (
-      <div className="mt-6 pt-4 border-t border-white/5">
-        <h4 className="text-sm font-semibold mb-3 text-white/70">Załączniki ({email.attachments.length})</h4>
-        <div className="space-y-2">
-          {email.attachments.map(attachment => (
-            <a
-              key={attachment.id}
-              href={emailAPI.getAttachmentUrl(email.id, attachment.id)}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex items-center gap-3 p-3 bg-white/5 hover:bg-white/10 rounded-lg transition-colors group"
-            >
-              <div className="w-10 h-10 bg-[#5b9dff]/20 rounded-lg flex items-center justify-center flex-shrink-0">
-                <svg className="w-5 h-5 text-[#5b9dff]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
-                </svg>
-              </div>
-              <div className="flex-1 min-w-0">
-                <div className="text-sm font-medium truncate">{attachment.filename}</div>
-                <div className="text-xs text-white/40">
-                  {(attachment.size / 1024).toFixed(0)} KB
-                </div>
-              </div>
-              <svg className="w-5 h-5 text-white/40 group-hover:text-white/60 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-              </svg>
-            </a>
-          ))}
-        </div>
-      </div>
-    );
   };
 
   const getInitials = (email: string) => {
@@ -353,7 +318,7 @@ function Email({ sidebarVisible }: EmailProps) {
         onSelectLabel={setSelectedLabel}
         onLogout={handleLogout}
         mailboxStats={mailboxStats}
-        // todayStats={todayStats}
+        todayStats={todayStats}
       />
 
       <main className="flex-1 overflow-hidden flex flex-col bg-[#15161b]">
@@ -426,9 +391,10 @@ function Email({ sidebarVisible }: EmailProps) {
                           <h5 className={`text-sm mb-1 truncate ${email.unread ? 'font-medium' : 'text-white/60'}`}>
                             {email.subject || '(brak tematu)'}
                           </h5>
-                          <p className="text-sm text-white/40 line-clamp-1 flex items-center gap-2">
+                          {/* 🔥 FIX: line-clamp-2 zamiast line-clamp-1 */}
+                          <p className="text-sm text-white/40 line-clamp-2 flex items-center gap-2">
                             {email.snippet}
-                            {email.hasAttachment && <span title="Ma załącznik">📎</span>}
+                            {email.hasAttachment && <span title="Ma załącznik" className="flex-shrink-0">📎</span>}
                           </p>
                         </div>
                       </div>
@@ -499,21 +465,13 @@ function Email({ sidebarVisible }: EmailProps) {
               </div>
 
               <div className="flex-1 overflow-y-auto custom-scrollbar p-6">
+                {/* 🔥 FIX: Usunąłem prose prose-invert które nadpisywało czcionki */}
                 <div
-                  className="prose prose-invert max-w-none mb-6"
+                  className="email-body mb-6 leading-relaxed text-white/90"
                   dangerouslySetInnerHTML={{ __html: renderEmailBody(selectedEmail) }}
                 />
                 
-                {/* DEBUG INFO */}
-                {selectedEmail.hasAttachment && (
-                  <div className="mb-4 p-3 bg-yellow-500/10 border border-yellow-500/30 rounded text-yellow-200 text-xs">
-                    ⚠️ DEBUG: Email ma załącznik (hasAttachment=true), 
-                    attachments.length={selectedEmail.attachments?.length || 0}, 
-                    inlineImages.length={selectedEmail.inlineImages?.length || 0}
-                  </div>
-                )}
-                
-                {/* Załączniki - ZAWSZE PRÓBUJ WYŚWIETLIĆ */}
+                {/* Załączniki */}
                 {selectedEmail.attachments && selectedEmail.attachments.length > 0 && (
                   <div className="mt-6 pt-6 border-t-2 border-[#5b9dff]/50">
                     <h4 className="text-lg font-bold mb-4 text-white flex items-center gap-2">
@@ -548,14 +506,6 @@ function Email({ sidebarVisible }: EmailProps) {
                         </a>
                       ))}
                     </div>
-                  </div>
-                )}
-                
-                {/* INFO gdy brak załączników ale flaga jest ustawiona */}
-                {selectedEmail.hasAttachment && (!selectedEmail.attachments || selectedEmail.attachments.length === 0) && (
-                  <div className="mt-6 p-4 bg-red-500/10 border border-red-500/30 rounded text-red-200">
-                    ⚠️ Email oznaczony jako posiadający załączniki, ale tablica attachments jest pusta!
-                    Sprawdź backend i console.log.
                   </div>
                 )}
               </div>

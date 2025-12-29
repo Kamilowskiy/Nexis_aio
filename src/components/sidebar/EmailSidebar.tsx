@@ -1,18 +1,4 @@
-import { type UserProfile, type MailboxStats } from '../../services/emailAPI';
-
-// ⚙️ KONFIGURACJA - dokładnie jak Gmail
-// Tylko kategoria "Główne" (PRIMARY) jest liczona w "Nieprzeczytane"
-const PRIMARY_CATEGORIES = ['INBOX']; // Gmail zwraca INBOX jako PRIMARY
-
-const EXCLUDED_FROM_UNREAD_COUNT = [
-  'SPAM',
-  'TRASH',
-  'CATEGORY_SOCIAL',     // Społeczność
-  'CATEGORY_PROMOTIONS', // Oferty  
-  'CATEGORY_UPDATES',    // Aktualizacje
-  'CATEGORY_FORUMS',     // Fora
-  'CATEGORY_PERSONAL',   // Osobiste (jeśli istnieje)
-];
+import { type UserProfile, type MailboxStats } from '../../services/emailAPI-rust';
 
 interface EmailSidebarProps {
   visible: boolean;
@@ -21,6 +7,7 @@ interface EmailSidebarProps {
   onSelectLabel?: (label: string) => void;
   onLogout?: () => void;
   mailboxStats?: MailboxStats;
+  todayStats?: { totalToday: number; unreadToday: number };
 }
 
 function EmailSidebar({ 
@@ -29,7 +16,8 @@ function EmailSidebar({
   selectedLabel = 'INBOX',
   onSelectLabel = () => {},
   onLogout = () => {},
-  mailboxStats = {}
+  mailboxStats = {},
+  todayStats = { totalToday: 0, unreadToday: 0 }
 }: EmailSidebarProps) {
   const mailboxes = [
     { id: 'INBOX', name: 'Odebrane', icon: 'inbox', color: '#5b9dff' },
@@ -46,9 +34,9 @@ function EmailSidebar({
     { id: 'SPAM', name: 'Spam', icon: 'alert', color: '#ef4444' },
   ];
 
-  // Tylko INBOX (Główne) w licznikach - dokładnie jak Gmail
+  // 🔥 FIX: Używaj todayStats zamiast INBOX
   const totalUnread = mailboxStats['INBOX']?.unread || 0;
-  const inboxToday = mailboxStats['INBOX']?.unread || 0;
+  const inboxToday = todayStats.totalToday; // 🔥 Z API /stats/today
 
   const getMailboxStats = (mailboxId: string) => {
     const stats = mailboxStats[mailboxId] || { total: 0, unread: 0 };
@@ -56,9 +44,9 @@ function EmailSidebar({
   };
 
   // Debug log
-  console.log('📊 Sidebar - Tylko INBOX w licznikach (jak Gmail)');
-  console.log('📊 Total unread:', totalUnread);
-  console.log('📊 Inbox today:', inboxToday);
+  console.log('📊 Sidebar - Używam todayStats');
+  console.log('📊 Total unread (INBOX):', totalUnread);
+  console.log('📊 Today stats:', todayStats);
 
   return (
     <aside

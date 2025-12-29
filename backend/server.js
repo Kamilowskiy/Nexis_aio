@@ -5,9 +5,9 @@ import { google } from 'googleapis';
 
 // Import routes
 import authRoutes from './routes/auth.js';
-// import emailRoutes from './routes/emails.js';
+import emailRoutes from './routes/emails.js';
 import mailboxRoutes from './routes/mailbox.js';
-// import userRoutes from './routes/user.js';
+import userRoutes from './routes/user.js';
 
 dotenv.config();
 
@@ -36,18 +36,18 @@ app.get('/', (req, res) => {
     version: '1.0.0',
     endpoints: {
       auth: '/auth/*',
-      // emails: '/api/emails/*',
+      emails: '/api/emails/*',
       mailbox: '/api/mailbox/*',
-      // user: '/api/user/*'
+      user: '/api/user/*'
     }
   });
 });
 
 // Mount routes
 app.use('/auth', authRoutes(oauth2Client, userTokens));
-// app.use('/api/emails', emailRoutes(oauth2Client, userTokens));
+app.use('/api/emails', emailRoutes(oauth2Client, userTokens));
 app.use('/api/mailbox', mailboxRoutes(oauth2Client, userTokens));
-// app.use('/api/user', userRoutes(oauth2Client, userTokens));
+app.use('/api/user', userRoutes(oauth2Client, userTokens));
 
 // 404 handler
 app.use((req, res) => {

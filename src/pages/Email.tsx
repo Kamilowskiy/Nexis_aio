@@ -258,9 +258,14 @@ function Email({ sidebarVisible }: EmailProps) {
   const handleEmailClick = async (email: EmailMessage) => {
     try {
       const fullEmail = await emailAPI.getEmail(email.id);
-      console.log('📧 Loaded email:', fullEmail.id, 'hasAttachment:', fullEmail.hasAttachment);
-      console.log('📧 Email labels:', fullEmail.labelIds); // ✅ DODAJ TO
-
+      
+      // ✅ DEBUG: sprawdź szczegóły
+      console.log('📧 Full email object:', fullEmail);
+      console.log('📧 Body length:', fullEmail.body?.length || 0);
+      console.log('📧 Body first 500 chars:', fullEmail.body?.substring(0, 500));
+      console.log('📧 Has HTML tags:', fullEmail.body?.includes('<html>') || fullEmail.body?.includes('<body>'));
+      console.log('📧 Snippet:', fullEmail.snippet);
+      
       setSelectedEmail(fullEmail);
 
       if (email.unread) {
@@ -305,10 +310,208 @@ function Email({ sidebarVisible }: EmailProps) {
       alert('Błąd usuwania wiadomości');
     }
   };
-  
+
+ // ✅ Renderuj email body w iframe (z obsługą plain text)
+  const renderEmailInIframe = (email: EmailMessage) => {
+    const sanitizedBody = sanitizeEmailBody(email);
+    const isPlainText = !email.body.includes('<') || email.body.trim().startsWith('Content-Type: text/plain');
+    
+    // Kompletny HTML dokument z własnymi stylami
+    const iframeContent = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+    
+    body {
+      margin: 0;
+      padding: 16px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      font-size: 14px;
+      line-height: 1.6;
+      color: rgba(255, 255, 255, 0.9);
+      background: transparent;
+      word-wrap: break-word;
+      overflow-wrap: break-word;
+    }
+    
+    /* ✅ Style dla plain text emaili */
+    .plain-text-email {
+      white-space: pre-wrap;
+      font-family: 'Courier New', Consolas, Monaco, monospace;
+      font-size: 13px;
+    }
+    
+    /* Podstawowe style dla czytelności */
+    a {
+      color: #5b9dff;
+      text-decoration: underline;
+      word-break: break-word;
+    }
+    
+    a:hover {
+      color: #4a8ce6;
+    }
+    
+    img {
+      max-width: 100%;
+      height: auto;
+      display: block;
+      margin: 0.5em 0;
+    }
+    
+    table {
+      border-collapse: collapse;
+      max-width: 100%;
+      width: auto;
+    }
+    
+    table td, table th {
+      padding: 8px;
+      vertical-align: top;
+    }
+    
+    p {
+      margin: 0.75em 0;
+    }
+    
+    h1, h2, h3, h4, h5, h6 {
+      margin: 1em 0 0.5em 0;
+      font-weight: 600;
+      color: rgba(255, 255, 255, 0.95);
+      line-height: 1.3;
+    }
+    
+    h1 { font-size: 1.75em; }
+    h2 { font-size: 1.5em; }
+    h3 { font-size: 1.25em; }
+    h4 { font-size: 1.1em; }
+    h5 { font-size: 1em; }
+    h6 { font-size: 0.9em; }
+    
+    ul, ol {
+      margin: 0.75em 0;
+      padding-left: 2em;
+    }
+    
+    li {
+      margin: 0.25em 0;
+    }
+    
+    blockquote {
+      margin: 1em 0;
+      padding: 0.5em 0 0.5em 1em;
+      border-left: 3px solid rgba(91, 157, 255, 0.5);
+      color: rgba(255, 255, 255, 0.7);
+      font-style: italic;
+    }
+    
+    pre {
+      background: rgba(0, 0, 0, 0.3);
+      padding: 1em;
+      border-radius: 0.5em;
+      overflow-x: auto;
+      margin: 1em 0;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    
+    code {
+      background: rgba(0, 0, 0, 0.3);
+      padding: 0.2em 0.4em;
+      border-radius: 0.3em;
+      font-family: 'Courier New', Consolas, Monaco, monospace;
+      font-size: 0.9em;
+      color: #5b9dff;
+    }
+    
+    pre code {
+      background: transparent;
+      padding: 0;
+      color: rgba(255, 255, 255, 0.9);
+    }
+    
+    hr {
+      border: none;
+      border-top: 1px solid rgba(255, 255, 255, 0.1);
+      margin: 1.5em 0;
+    }
+    
+    strong, b {
+      font-weight: 600;
+      color: rgba(255, 255, 255, 0.95);
+    }
+    
+    em, i {
+      font-style: italic;
+    }
+    
+    /* Gmail-specific classes */
+    .gmail_quote {
+      color: rgba(255, 255, 255, 0.6);
+      border-left: 2px solid rgba(91, 157, 255, 0.3);
+      padding-left: 1em;
+      margin: 1em 0;
+    }
+    
+    .gmail_signature {
+      color: rgba(255, 255, 255, 0.7);
+      margin-top: 2em;
+      padding-top: 1em;
+      border-top: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    
+    /* Zapobiegaj bardzo szerokim tabelom */
+    div, span {
+      max-width: 100%;
+    }
+  </style>
+</head>
+<body>
+  ${isPlainText ? `<div class="plain-text-email">${sanitizedBody}</div>` : sanitizedBody}
+</body>
+</html>
+    `.trim();
+    
+    return iframeContent;
+  };
+
+  // ✅ SANITIZE - obsługa plain text i HTML
   const sanitizeEmailBody = (email: EmailMessage): string => {
     let htmlContent = email.body || email.snippet;
-
+    
+    // ✅ Sprawdź czy to plain text
+    const isPlainText = !htmlContent.includes('<') && !htmlContent.includes('</');
+    
+    if (isPlainText) {
+      // Dla plain text: escape HTML i zamień URLs na linki
+      htmlContent = htmlContent
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+      
+      // Zamień URLs na klikalne linki
+      htmlContent = htmlContent.replace(
+        /(https?:\/\/[^\s]+)/g,
+        '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>'
+      );
+      
+      // Zamień email adresy na linki
+      htmlContent = htmlContent.replace(
+        /([a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+\.[a-zA-Z0-9_-]+)/g,
+        '<a href="mailto:$1">$1</a>'
+      );
+      
+      return htmlContent;
+    }
+    
+    // Dla HTML: Replace inline images
     if (email.inlineImages && email.inlineImages.length > 0) {
       email.inlineImages.forEach(image => {
         if (image.contentId) {
@@ -321,32 +524,12 @@ function Email({ sidebarVisible }: EmailProps) {
 
     const parser = new DOMParser();
     const doc = parser.parseFromString(htmlContent, 'text/html');
-
+    
+    // Usuń <script> tagi
     const scriptTags = doc.querySelectorAll('script');
     scriptTags.forEach(tag => tag.remove());
-
-    const styleTags = doc.querySelectorAll('style');
-    styleTags.forEach(tag => {
-      const styleContent = tag.textContent || '';
-      const dangerousSelectors = [
-        'body', 'html', '#root', 'header', 'nav', 'aside',
-        'main', 'footer', '.sidebar', '@import', '@font-face'
-      ];
-
-      let shouldRemove = false;
-      for (const selector of dangerousSelectors) {
-        if (styleContent.toLowerCase().includes(selector.toLowerCase())) {
-          shouldRemove = true;
-          break;
-        }
-      }
-
-      if (shouldRemove) {
-        console.log('🚫 Removed dangerous <style> tag');
-        tag.remove();
-      }
-    });
-
+    
+    // Usuń event handlery i sprawdź linki
     const allElements = doc.querySelectorAll('*');
     allElements.forEach(element => {
       Array.from(element.attributes).forEach(attr => {
@@ -354,45 +537,21 @@ function Email({ sidebarVisible }: EmailProps) {
           element.removeAttribute(attr.name);
         }
       });
-
+      
+      // Sprawdź linki - usuń javascript: i dodaj target="_blank"
       if (element.tagName === 'A') {
         const href = element.getAttribute('href');
         if (href && href.toLowerCase().startsWith('javascript:')) {
           element.removeAttribute('href');
+        } else if (href) {
+          element.setAttribute('target', '_blank');
+          element.setAttribute('rel', 'noopener noreferrer');
         }
       }
-
-      const style = element.getAttribute('style');
-      if (style) {
-        const blockedProperties = [
-          'position: fixed',
-          'position:fixed',
-          'position: sticky',
-          'position:sticky',
-        ];
-
-        let cleanStyle = style;
-
-        blockedProperties.forEach(prop => {
-          const regex = new RegExp(prop, 'gi');
-          cleanStyle = cleanStyle.replace(regex, 'position: relative');
-        });
-
-        cleanStyle = cleanStyle.replace(/z-index\s*:\s*(\d+)/gi, (match, value) => {
-          const zIndex = parseInt(value);
-          if (zIndex > 100) {
-            return 'z-index: 10';
-          }
-          return match;
-        });
-
-        element.setAttribute('style', cleanStyle);
-      }
     });
-
+    
     return doc.body.innerHTML;
   };
-
   const getInitials = (email: string) => {
     const parts = email.split('@')[0].split('.');
     if (parts.length >= 2) {
@@ -643,12 +802,42 @@ function Email({ sidebarVisible }: EmailProps) {
               </div>
 
               <div className="flex-1 overflow-y-auto custom-scrollbar p-6">
-                <div className="email-content-wrapper">
-                  <div
-                    className="email-body-isolated"
-                    dangerouslySetInnerHTML={{ __html: sanitizeEmailBody(selectedEmail) }}
-                  />
-                </div>
+                {/* ✅ IFRAME dla email body - pełna izolacja CSS */}
+                <iframe
+                  ref={(iframe) => {
+                    if (iframe && iframe.contentWindow) {
+                      const doc = iframe.contentWindow.document;
+                      doc.open();
+                      doc.write(renderEmailInIframe(selectedEmail));
+                      doc.close();
+                      
+                      // Dynamicznie ustaw wysokość iframe na podstawie zawartości
+                      const resizeIframe = () => {
+                        if (doc.body) {
+                          iframe.style.height = doc.body.scrollHeight + 'px';
+                        }
+                      };
+                      
+                      // Resize po załadowaniu
+                      iframe.contentWindow.addEventListener('load', resizeIframe);
+                      // Resize po załadowaniu obrazków
+                      const images = doc.querySelectorAll('img');
+                      images.forEach(img => {
+                        img.addEventListener('load', resizeIframe);
+                      });
+                      
+                      // Initial resize
+                      setTimeout(resizeIframe, 100);
+                    }
+                  }}
+                  sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox"
+                  className="w-full border-0"
+                  style={{
+                    minHeight: '200px',
+                    backgroundColor: 'transparent',
+                  }}
+                  title="Email content"
+                />
 
                 {selectedEmail.attachments && selectedEmail.attachments.length > 0 && (
                   <div className="mt-6 pt-6 border-t-2 border-[#5b9dff]/50">

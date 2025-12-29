@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import EmailSidebar from '../components/sidebar/EmailSidebar';
-import emailAPI, { type EmailMessage, type UserProfile, type MailboxStats } from '../services/emailAPI';
+import emailAPI, { type EmailMessage, type UserProfile, type MailboxStats } from '../services/emailAPI-rust';
 
 interface EmailProps {
   sidebarVisible: boolean;
@@ -22,6 +22,10 @@ function Email({ sidebarVisible }: EmailProps) {
   const [selectedLabel, setSelectedLabel] = useState('INBOX');
   const [nextPageToken, setNextPageToken] = useState<string | undefined>(undefined);
   const [mailboxStats, setMailboxStats] = useState<MailboxStats>({});
+  const [todayStats, setTodayStats] = useState<{ totalToday: number; unreadToday: number }>({
+    totalToday: 0,
+    unreadToday: 0
+  });
 
   useEffect(() => {
     console.log('🔍 Email component mounted, checking auth...');
@@ -46,6 +50,7 @@ function Email({ sidebarVisible }: EmailProps) {
     if (authenticated) {
       loadEmails();
       loadMailboxStats();
+      loadTodayStats();
     }
   }, [authenticated, selectedLabel]);
 
@@ -60,6 +65,7 @@ function Email({ sidebarVisible }: EmailProps) {
         loadEmails();
         loadUserProfile();
         loadMailboxStats();
+        loadTodayStats();
       } else {
         console.log('❌ User is NOT authenticated');
       }
@@ -142,6 +148,16 @@ function Email({ sidebarVisible }: EmailProps) {
       setMailboxStats(stats);
     } catch (error) {
       console.error('Error loading mailbox stats:', error);
+    }
+  };
+
+  const loadTodayStats = async () => {
+    try {
+      const stats = await emailAPI.getTodayStats();
+      console.log('📅 Today stats:', stats);
+      setTodayStats(stats);
+    } catch (error) {
+      console.error('Error loading today stats:', error);
     }
   };
 
@@ -337,6 +353,7 @@ function Email({ sidebarVisible }: EmailProps) {
         onSelectLabel={setSelectedLabel}
         onLogout={handleLogout}
         mailboxStats={mailboxStats}
+        // todayStats={todayStats}
       />
 
       <main className="flex-1 overflow-hidden flex flex-col bg-[#15161b]">
